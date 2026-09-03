@@ -191,13 +191,140 @@ const metricDefs = [
 ];
 
 const state = {
-  mode: localStorage.getItem("ims_mode_v2") || "student",
+  mode: localStorage.getItem("ims_mode_v3") || localStorage.getItem("ims_mode_v2") || "student",
   currentScenario:null, stepIndex:0, choices:[],
   scores:{privacy:0,care:0,verify:0,balance:0},
-  completed:JSON.parse(localStorage.getItem("ims_completed_v2") || "{}"),
+  completed:JSON.parse(localStorage.getItem("ims_completed_v3") || localStorage.getItem("ims_completed_v2") || "{}"),
   votes:[0,0,0],
-  pendingChoice:null
+  pendingChoice:null,
+
+  // v3 LIVE classroom
+  liveTeacher: JSON.parse(localStorage.getItem("ims_live_teacher") || "null"),
+  liveStudent: JSON.parse(localStorage.getItem("ims_live_student") || "null"),
+  deviceId: localStorage.getItem("ims_device_id") || "",
+  livePollTimer:null,
+  tallyPollTimer:null,
+  studentHasVotedKey:null,
+  lastLiveSessionState:null
 };
+
+
+const LIVE = {
+  get url(){ return String((window.IMS_CONFIG && window.IMS_CONFIG.GAS_WEB_APP_URL) || "").trim(); },
+  get configured(){ return /^https:\/\/script\.google\.com\/macros\/s\/.+\/exec/.test(this.url); }
+};
+
+if(!state.deviceId){
+  state.deviceId = (crypto.randomUUID ? crypto.randomUUID() : `dev-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  localStorage.setItem("ims_device_id", state.deviceId);
+}
+
+function randomToken(){
+  return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+}
+function randomLessonCode(){
+  return String(Math.floor(100000 + Math.random()*900000));
+}
+function stopLiveTimers(){
+  if(state.livePollTimer){ clearTimeout(state.livePollTimer); state.livePollTimer=null; }
+  if(state.tallyPollTimer){ clearTimeout(state.tallyPollTimer); state.tallyPollTimer=null; }
+}
+function gasPost(payload){
+  if(!LIVE.configured) return Promise.reject(new Error("GAS URLが未設定です"));
+  return fetch(LIVE.url,{
+    method:"POST",
+    mode:"no-cors",
+    headers:{"Content-Type":"text/plain;charset=UTF-8"},
+    body:JSON.stringify(payload)
+  });
+}
+function gasJsonp(params, timeout=7000){
+  return new Promise((resolve,reject)=>{
+    if(!LIVE.configured){ reject(new Error("GAS URLが未設定です")); return; }
+    const cb=`__ims_cb_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const script=document.createElement("script");
+    const timer=setTimeout(()=>cleanup(new Error("通信がタイムアウトしました")),timeout);
+    function cleanup(err,data){
+      clearTimeout(timer);
+      try{ delete window[cb]; }catch(_){}
+      script.remove();
+      err ? reject(err) : resolve(data);
+    }
+    window[cb]=(data)=>cleanup(null,data);
+    const q=new URLSearchParams({...params,callback:cb,_:String(Date.now())});
+    script.src=`${LIVE.url}?${q.toString()}`;
+    script.onerror=()=>cleanup(new Error("GASとの通信に失敗しました"));
+    document.head.appendChild(script);
+  });
+}
+async function createLiveLesson(){
+  if(!LIVE.configured) throw new Error("config.js にGAS WebアプリURLを設定してください。");
+  for(let attempt=0;attempt<4;attempt++){
+    const code=randomLessonCode(), sessionId=randomToken(), teacherKey=randomToken();
+    await gasPost({action:"createSession",code,sessionId,teacherKey});
+    await new Promise(r=>setTimeout(r,850));
+    try{
+      const info=await gasJsonp({action:"session",code});
+      if(info && info.ok && info.session && info.session.sessionId===sessionId){
+        state.liveTeacher={code,sessionId,teacherKey};
+        localStorage.setItem("ims_live_teacher",JSON.stringify(state.liveTeacher));
+        return state.liveTeacher;
+      }
+    }catch(_){}
+  }
+  throw new Error("授業コードを作成できませんでした。もう一度お試しください。");
+}
+async function closeLiveLesson(){
+  if(!state.liveTeacher) return;
+  try{
+    await gasPost({action:"closeSession",...state.liveTeacher});
+  }catch(_){}
+  state.liveTeacher=null;
+  localStorage.removeItem("ims_live_teacher");
+  stopLiveTimers();
+}
+async function pushTeacherState(phase="voting",chosenChoice=""){
+  if(!state.liveTeacher || !state.currentScenario) return;
+  const payload={
+    action:"updateSession",
+    ...state.liveTeacher,
+    scenarioId:state.currentScenario.id,
+    stepIndex:state.stepIndex,
+    phase,
+    chosenChoice: chosenChoice === "" ? "" : Number(chosenChoice)
+  };
+  await gasPost(payload);
+}
+async function joinLiveLesson(code){
+  code=String(code||"").replace(/\D/g,"").slice(0,6);
+  if(code.length!==6) throw new Error("6桁の授業コードを入力してください。");
+  const info=await gasJsonp({action:"session",code});
+  if(!info || !info.ok || !info.session || !info.session.active) throw new Error("その授業コードは見つからないか、終了しています。");
+  state.liveStudent={code,sessionId:info.session.sessionId};
+  localStorage.setItem("ims_live_student",JSON.stringify(state.liveStudent));
+  state.lastLiveSessionState=info.session;
+  return info.session;
+}
+function leaveLiveLesson(){
+  state.liveStudent=null;state.lastLiveSessionState=null;state.studentHasVotedKey=null;
+  localStorage.removeItem("ims_live_student");stopLiveTimers();
+}
+async function sendLiveVote(choiceIndex){
+  if(!state.liveStudent || !state.currentScenario) return;
+  await gasPost({
+    action:"vote",
+    code:state.liveStudent.code,
+    sessionId:state.liveStudent.sessionId,
+    deviceId:state.deviceId,
+    scenarioId:state.currentScenario.id,
+    stepIndex:state.stepIndex,
+    choice:Number(choiceIndex)
+  });
+}
+function liveStepKey(session){
+  if(!session) return "";
+  return `${session.code}|${session.scenarioId}|${session.stepIndex}`;
+}
 
 const app = document.getElementById("app");
 const homeBtn = document.getElementById("homeBtn");
@@ -214,7 +341,7 @@ document.querySelectorAll(".mode-select-btn").forEach(b=>b.addEventListener("cli
 
 function setMode(mode){
   state.mode=mode;
-  localStorage.setItem("ims_mode_v2",mode);
+  localStorage.setItem("ims_mode_v3",mode);
   document.body.classList.toggle("teacher-mode",mode==="teacher");
   modeBadge.textContent=mode==="teacher"?"授業モード":"児童モード";
 }
@@ -225,36 +352,63 @@ function resetRun(){
   state.votes=[0,0,0];state.pendingChoice=null;
 }
 function renderHome(){
+  stopLiveTimers();
   state.currentScenario=null;
   setMode(state.mode);
   const tpl=document.getElementById("homeTemplate");
   app.innerHTML="";app.appendChild(tpl.content.cloneNode(true));
+
   document.querySelectorAll(".mode-card").forEach(btn=>{
     btn.classList.toggle("active",btn.dataset.mode===state.mode);
     btn.addEventListener("click",()=>{setMode(btn.dataset.mode);renderHome();});
   });
-  document.getElementById("scenarioHeading").textContent=state.mode==="teacher"?"電子黒板で進めるシナリオを選ぼう":"体験するシナリオを選ぼう";
+
+  renderLiveHomePanel();
+
+  document.getElementById("scenarioHeading").textContent=state.mode==="teacher"
+    ?"電子黒板で進めるシナリオを選ぼう"
+    :(state.liveStudent?"先生がシナリオを開始するまで待とう":"体験するシナリオを選ぼう");
+
   const grid=document.getElementById("scenarioGrid");
-  scenarios.forEach(sc=>{
-    const card=document.createElement("article");
-    card.className="scenario-card card";card.setAttribute("role","button");card.setAttribute("tabindex","0");
-    const done=state.completed[sc.id]?`<span class="done-mark">体験済み ✓</span>`:"";
-    card.innerHTML=`${done}<div class="icon" aria-hidden="true">${sc.icon}</div><p class="eyebrow">${sc.label}</p><h3>${sc.title}</h3><p>${sc.short}</p>
-      <div class="meta">${sc.tags.map(t=>`<span class="pill">${t}</span>`).join("")}${sc.new?`<span class="pill new">追加</span>`:""}</div>`;
-    card.addEventListener("click",()=>startScenario(sc.id));
-    card.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();startScenario(sc.id);}});
-    grid.appendChild(card);
-  });
+
+  if(state.mode==="student" && state.liveStudent){
+    grid.innerHTML=`<div class="card live-wait-card" style="grid-column:1/-1">
+      <div class="big-icon">📡</div>
+      <h2>授業に参加中</h2>
+      <p>授業コード <strong>${state.liveStudent.code}</strong><br>先生が最初の場面を開始すると、この画面が自動で切り替わります。</p>
+      <p class="live-message">先生の画面を見ながら待ってください。</p>
+    </div>`;
+    beginStudentSessionPolling(true);
+  }else{
+    scenarios.forEach(sc=>{
+      const card=document.createElement("article");
+      card.className="scenario-card card";card.setAttribute("role","button");card.setAttribute("tabindex","0");
+      const done=state.completed[sc.id]?`<span class="done-mark">体験済み ✓</span>`:"";
+      card.innerHTML=`${done}<div class="icon" aria-hidden="true">${sc.icon}</div><p class="eyebrow">${sc.label}</p><h3>${sc.title}</h3><p>${sc.short}</p>
+        <div class="meta">${sc.tags.map(t=>`<span class="pill">${t}</span>`).join("")}${sc.new?`<span class="pill new">追加</span>`:""}</div>`;
+      card.addEventListener("click",()=>startScenario(sc.id));
+      card.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();startScenario(sc.id);}});
+      grid.appendChild(card);
+    });
+  }
+
   const doneCount=Object.values(state.completed).filter(Boolean).length;
   document.getElementById("overallProgress").textContent=state.mode==="teacher"?"全7テーマ・各3場面":`${doneCount} / ${scenarios.length} 体験済み`;
   document.getElementById("lessonTip").innerHTML=state.mode==="teacher"
-    ?`<h3>🧑‍🏫 授業モードの使い方</h3><ol><li>電子黒板に表示し、A・B・Cから児童に挙手してもらいます。</li><li>先生が＋／−で人数を入力すると、その場で割合が表示されます。</li><li>クラスで選ぶ選択肢を押して結果を確認し、「なぜ？」を話してから次へ進みます。</li></ol>`
-    :`<h3>👤 児童モードの使い方</h3><ol><li>場面を読んで、自分ならどうするか選びます。</li><li>選んだ直後に「このあとどうなった？」を確認します。</li><li>最後に4つの視点と3問で振り返ります。</li></ol><p><strong>45分なら最初の3テーマを基本セット</strong>にし、4〜7は学級の実態に応じて選ぶ使い方がおすすめです。</p>`;
+    ?`<h3>🧑‍🏫 授業モード</h3><ol><li><strong>LIVE授業</strong>：授業コードを児童に伝えると、各端末の回答が自動集計されます。</li><li>先生が「クラスではA/B/Cを選ぶ」を押すと結果公開。次の場面へ進むと児童端末も追従します。</li><li>GASが未設定・通信不調でも、従来の<strong>手動挙手集計</strong>で進められます。</li></ol>`
+    :`<h3>👤 児童モード</h3><ol><li>個別学習なら、そのままシナリオを選びます。</li><li>先生と一緒に進めるときは、上の「授業に参加」から6桁コードを入力します。</li><li>LIVE授業中は、回答は匿名の端末IDだけで集計されます。</li></ol>`;
   window.scrollTo({top:0,behavior:"smooth"});
 }
 function startScenario(id){
   state.currentScenario=scenarios.find(s=>s.id===id);resetRun();
-  state.mode==="teacher"?renderTeacherScenario():renderStudentScenario();
+  if(state.mode==="teacher"){
+    renderTeacherScenario();
+    if(state.liveTeacher){
+      pushTeacherState("voting","").catch(()=>{});
+    }
+  }else{
+    renderStudentScenario();
+  }
 }
 
 /* student */
@@ -262,11 +416,13 @@ function renderStudentScenario(){
   const sc=state.currentScenario,tpl=document.getElementById("studentScenarioTemplate");
   app.innerHTML="";app.appendChild(tpl.content.cloneNode(true));
   bindBack();
-  document.getElementById("scenarioLabel").textContent=sc.label;
+  document.getElementById("scenarioLabel").textContent=sc.label+(state.liveStudent?"・LIVE授業":"");
   document.getElementById("scenarioTitle").textContent=sc.title;
   document.getElementById("scenarioIntro").textContent=sc.intro;
   document.getElementById("phoneAppHeader").innerHTML=`<span class="app-dot"></span>${sc.appName}`;
-  renderStudentStep();window.scrollTo({top:0,behavior:"smooth"});
+  renderStudentStep();
+  if(state.liveStudent) beginStudentSessionPolling(false);
+  window.scrollTo({top:0,behavior:"smooth"});
 }
 function renderStudentStep(){
   const sc=state.currentScenario,step=sc.steps[state.stepIndex],current=state.stepIndex+1;
@@ -276,13 +432,44 @@ function renderStudentStep(){
   phoneContent.className="phone-content"+(step.type==="night-chat"||step.type==="game-night"?" screen-night":"");
   phoneContent.innerHTML=buildMockContent(step);
   const panel=document.getElementById("decisionPanel");
-  panel.innerHTML=`<p class="eyebrow">あなたならどうする？</p><h3>${step.prompt}</h3><div class="context-box">${step.context}</div>
-  <div class="choice-list">${step.choices.map((c,i)=>`<button class="choice-btn" data-index="${i}" type="button"><span class="choice-index">${letter(i)}</span>${c.text}</button>`).join("")}</div>`;
+
+  if(state.liveStudent){
+    const session=state.lastLiveSessionState;
+    const key=liveStepKey(session);
+    if(session && (session.phase==="reveal" || session.phase==="finished") && session.scenarioId===sc.id && Number(session.stepIndex)===state.stepIndex && session.chosenChoice!==""){
+      showLiveStudentReveal(Number(session.chosenChoice), session.phase==="finished");return;
+    }
+    if(state.studentHasVotedKey===key){
+      panel.innerHTML=`<p class="eyebrow">回答送信済み</p><div class="live-vote-lock"><h4>✓ 回答を送りました</h4><p>集計は先生の電子黒板に反映されます。先生が結果を公開するまで、画面を見ながら待ちましょう。</p></div>`;
+      return;
+    }
+  }
+
+  panel.innerHTML=`${state.liveStudent?`<div class="live-joined-banner"><span><span class="live-status-dot on"></span>LIVE授業・${state.liveStudent.code}</span><strong>匿名集計</strong></div>`:""}
+    <p class="eyebrow">${state.liveStudent?"いま投票中":"あなたならどうする？"}</p><h3>${step.prompt}</h3><div class="context-box">${step.context}</div>
+    <div class="choice-list">${step.choices.map((c,i)=>`<button class="choice-btn" data-index="${i}" type="button"><span class="choice-index">${letter(i)}</span>${c.text}</button>`).join("")}</div>`;
   panel.querySelectorAll(".choice-btn").forEach(b=>b.addEventListener("click",()=>showStudentOutcome(Number(b.dataset.index))));
 }
 function showStudentOutcome(index){
   const step=state.currentScenario.steps[state.stepIndex],choice=step.choices[index];
   const panel=document.getElementById("decisionPanel");
+
+  if(state.liveStudent){
+    const key=`${state.liveStudent.code}|${state.currentScenario.id}|${state.stepIndex}`;
+    state.studentHasVotedKey=key;
+    panel.innerHTML=`<p class="eyebrow">回答を送信中</p><div class="live-vote-lock"><h4>${letter(index)} を選びました</h4><p id="liveSendMsg">電子黒板の集計へ送っています…</p></div>`;
+    sendLiveVote(index).then(()=>{
+      const msg=document.getElementById("liveSendMsg");
+      if(msg) msg.textContent="✓ 回答を送りました。先生が結果を公開するまで待ちましょう。";
+    }).catch(()=>{
+      state.studentHasVotedKey=null;
+      const msg=document.getElementById("liveSendMsg");
+      if(msg) msg.innerHTML=`<span class="live-error">送信できませんでした。通信を確認して、もう一度選んでください。</span>`;
+      setTimeout(()=>{ if(state.currentScenario) renderStudentStep(); },1800);
+    });
+    return;
+  }
+
   panel.innerHTML=`<p class="eyebrow">このあとどうなった？</p><div class="outcome-box"><h4>${letter(index)} を選びました</h4><p>${choice.result}</p>
   <button id="studentNextBtn" class="primary-btn" type="button">${state.stepIndex===state.currentScenario.steps.length-1?"振り返りへ":"次の場面へ →"}</button></div>`;
   document.getElementById("studentNextBtn").addEventListener("click",()=>commitChoice(index,null));
@@ -293,10 +480,15 @@ function commitChoice(index,voteSnapshot){
   state.choices.push({step:state.stepIndex+1,prompt:step.prompt,choice:choice.text,result:choice.result,votes:voteSnapshot});
   state.stepIndex++;
   if(state.stepIndex>=sc.steps.length){
-    state.completed[sc.id]=true;localStorage.setItem("ims_completed_v2",JSON.stringify(state.completed));renderResult();
+    state.completed[sc.id]=true;localStorage.setItem("ims_completed_v3",JSON.stringify(state.completed));renderResult();
   }else{
     state.votes=[0,0,0];
-    state.mode==="teacher"?renderTeacherStep():renderStudentStep();
+    if(state.mode==="teacher"){
+      renderTeacherStep();
+      if(state.liveTeacher) pushTeacherState("voting","").catch(()=>{});
+    }else{
+      renderStudentStep();
+    }
   }
 }
 
@@ -304,11 +496,19 @@ function commitChoice(index,voteSnapshot){
 function renderTeacherScenario(){
   const sc=state.currentScenario,tpl=document.getElementById("teacherScenarioTemplate");
   app.innerHTML="";app.appendChild(tpl.content.cloneNode(true));bindBack();
-  document.getElementById("teacherScenarioLabel").textContent=sc.label+"・授業モード";
+  document.getElementById("teacherScenarioLabel").textContent=sc.label+(state.liveTeacher?"・LIVE授業":"・授業モード");
   document.getElementById("teacherScenarioTitle").textContent=sc.title;
   document.getElementById("teacherAppName").textContent=sc.appName;
-  document.getElementById("resetVotesBtn").addEventListener("click",()=>{state.votes=[0,0,0];updateVoteUI();});
-  renderTeacherStep();window.scrollTo({top:0,behavior:"smooth"});
+  document.getElementById("resetVotesBtn").addEventListener("click",()=>{
+    if(state.liveTeacher) return;
+    state.votes=[0,0,0];updateVoteUI();
+  });
+  if(state.liveTeacher){
+    document.getElementById("resetVotesBtn").textContent="LIVE自動集計中";
+    document.getElementById("resetVotesBtn").disabled=true;
+  }
+  renderTeacherStep();
+  window.scrollTo({top:0,behavior:"smooth"});
 }
 function renderTeacherStep(){
   const sc=state.currentScenario,step=sc.steps[state.stepIndex],current=state.stepIndex+1;
@@ -317,12 +517,16 @@ function renderTeacherStep(){
   document.getElementById("teacherStepBar").style.width=`${current/sc.steps.length*100}%`;
   document.getElementById("teacherPrompt").textContent=step.prompt;
   document.getElementById("teacherContextBox").textContent=step.context;
+  const status=document.getElementById("teacherLiveStatus");
+  status.innerHTML=state.liveTeacher
+    ?`<span class="live-code-mini"><span class="live-status-dot on"></span>LIVE ${state.liveTeacher.code}</span><div class="live-count-note" id="liveTotalCount">回答 0人</div>`
+    :`<span class="sync-warning">手動挙手モード</span>`;
   const mock=document.getElementById("teacherMockScreen");
   mock.className="teacher-mock-screen"+(step.type==="night-chat"||step.type==="game-night"?" screen-night":"");
   mock.innerHTML=buildMockContent(step);
   const choices=document.getElementById("teacherChoices");
   choices.innerHTML=step.choices.map((c,i)=>`
-    <article class="teacher-choice" data-index="${i}">
+    <article class="teacher-choice ${state.liveTeacher?"live-readonly":""}" data-index="${i}">
       <div class="teacher-choice-head"><div class="teacher-letter">${letter(i)}</div><h4>${c.text}</h4></div>
       <div class="vote-control">
         <div class="vote-row">
@@ -331,7 +535,7 @@ function renderTeacherStep(){
           <button class="vote-btn plus" data-index="${i}" type="button" aria-label="${letter(i)}を1人増やす">＋</button>
         </div>
         <div class="vote-bar"><div id="voteBar${i}"></div></div>
-        <div class="vote-meta"><span>挙手</span><span id="votePct${i}">0%</span></div>
+        <div class="vote-meta"><span>${state.liveTeacher?"LIVE回答":"挙手"}</span><span id="votePct${i}">0%</span></div>
         <button class="choose-route-btn" data-index="${i}" type="button">クラスでは ${letter(i)} を選ぶ</button>
       </div>
     </article>`).join("");
@@ -339,29 +543,204 @@ function renderTeacherStep(){
   choices.querySelectorAll(".minus").forEach(b=>b.addEventListener("click",()=>changeVote(Number(b.dataset.index),-1)));
   choices.querySelectorAll(".choose-route-btn").forEach(b=>b.addEventListener("click",()=>showTeacherOutcome(Number(b.dataset.index))));
   document.getElementById("teacherOutcome").hidden=true;updateVoteUI();
+  if(state.liveTeacher) beginTeacherTallyPolling();
 }
-function changeVote(i,delta){state.votes[i]=Math.max(0,state.votes[i]+delta);updateVoteUI();}
+function changeVote(i,delta){
+  if(state.liveTeacher) return;
+  state.votes[i]=Math.max(0,state.votes[i]+delta);updateVoteUI();
+}
 function updateVoteUI(){
   const total=state.votes.reduce((a,b)=>a+b,0);
   state.votes.forEach((v,i)=>{
     const num=document.getElementById(`voteNum${i}`),bar=document.getElementById(`voteBar${i}`),pct=document.getElementById(`votePct${i}`);
     if(!num)return;const p=total?Math.round(v/total*100):0;num.textContent=v;bar.style.width=`${p}%`;pct.textContent=`${p}%`;
   });
+  const totalEl=document.getElementById("liveTotalCount");
+  if(totalEl) totalEl.textContent=`回答 ${total}人`;
 }
 function showTeacherOutcome(index){
   const step=state.currentScenario.steps[state.stepIndex],choice=step.choices[index],total=state.votes.reduce((a,b)=>a+b,0);
   const snapshot=state.votes.slice();
   state.pendingChoice={index,votes:snapshot};
-  const summary=total?step.choices.map((_,i)=>`<span class="class-pill">${letter(i)} ${snapshot[i]}人（${Math.round(snapshot[i]/total*100)}%）</span>`).join(""):`<span class="class-pill">挙手数は未入力</span>`;
+  if(state.liveTeacher){
+    stopTeacherTallyPolling();
+    pushTeacherState("reveal",index).catch(()=>{});
+  }
+  const summary=total?step.choices.map((_,i)=>`<span class="class-pill">${letter(i)} ${snapshot[i]}人（${Math.round(snapshot[i]/total*100)}%）</span>`).join(""):`<span class="class-pill">回答はまだ0人</span>`;
   const out=document.getElementById("teacherOutcome");out.hidden=false;
   out.innerHTML=`<div class="class-summary">${summary}</div><p class="eyebrow">このあとどうなった？</p><h3>クラスでは ${letter(index)} を選択</h3><p>${choice.result}</p>
     <div class="teacher-outcome-actions">
-      <button id="backToVoteBtn" class="secondary-btn" type="button">選び直す</button>
+      ${state.liveTeacher?"":`<button id="backToVoteBtn" class="secondary-btn" type="button">選び直す</button>`}
       <button id="teacherNextBtn" class="primary-btn" type="button">${state.stepIndex===state.currentScenario.steps.length-1?"振り返りへ":"次の場面へ →"}</button>
     </div>`;
-  document.getElementById("backToVoteBtn").addEventListener("click",()=>{out.hidden=true;state.pendingChoice=null;});
-  document.getElementById("teacherNextBtn").addEventListener("click",()=>commitChoice(index,snapshot));
+  const back=document.getElementById("backToVoteBtn");
+  if(back) back.addEventListener("click",()=>{out.hidden=true;state.pendingChoice=null;});
+  document.getElementById("teacherNextBtn").addEventListener("click",()=>{
+    if(state.stepIndex===state.currentScenario.steps.length-1 && state.liveTeacher){
+      pushTeacherState("finished",index).catch(()=>{});
+    }
+    commitChoice(index,snapshot);
+  });
   out.scrollIntoView({behavior:"smooth",block:"nearest"});
+}
+
+
+/* LIVE classroom flow */
+function renderLiveHomePanel(){
+  const panel=document.getElementById("liveHomePanel");
+  if(!panel) return;
+
+  if(state.mode==="teacher"){
+    if(state.liveTeacher){
+      panel.innerHTML=`<div class="live-card teacher-live card">
+        <p class="eyebrow">LIVE CLASSROOM</p>
+        <h3><span class="live-status-dot on"></span>LIVE授業を受付中</h3>
+        <p>児童は「児童モード → 授業に参加」から、この6桁コードを入力します。</p>
+        <div class="live-row">
+          <div class="live-code-box"><small>授業コード</small><span class="live-code">${state.liveTeacher.code}</span></div>
+          <button id="endLiveLessonBtn" class="secondary-btn" type="button">LIVE授業を終了</button>
+        </div>
+        <p class="live-hint">※回答は氏名ではなく、このブラウザに保存したランダム端末IDで重複を防ぎます。</p>
+      </div>`;
+      document.getElementById("endLiveLessonBtn").addEventListener("click",async()=>{
+        if(confirm("このLIVE授業を終了しますか？")){
+          await closeLiveLesson();renderHome();
+        }
+      });
+    }else{
+      panel.innerHTML=`<div class="live-card teacher-live card">
+        <p class="eyebrow">LIVE CLASSROOM</p>
+        <h3>📡 児童30台の回答を電子黒板へ</h3>
+        <p>「LIVE授業を開始」を押すと6桁の授業コードを発行します。児童が選んだA/B/Cが自動で人数・割合表示されます。</p>
+        <div class="live-row">
+          <button id="startLiveLessonBtn" class="primary-btn" type="button">LIVE授業を開始</button>
+          <span id="liveTeacherMsg" class="live-message">${LIVE.configured?"GAS接続設定済み":"⚠ config.js のGAS URLが未設定です"}</span>
+        </div>
+      </div>`;
+      document.getElementById("startLiveLessonBtn").addEventListener("click",async()=>{
+        const btn=document.getElementById("startLiveLessonBtn"),msg=document.getElementById("liveTeacherMsg");
+        btn.disabled=true;msg.textContent="授業コードを作成しています…";
+        try{
+          await createLiveLesson();renderHome();
+        }catch(err){
+          msg.innerHTML=`<span class="live-error">${err.message}</span>`;btn.disabled=false;
+        }
+      });
+    }
+  }else{
+    if(state.liveStudent){
+      panel.innerHTML=`<div class="live-card card">
+        <p class="eyebrow">LIVE CLASSROOM</p>
+        <h3><span class="live-status-dot on"></span>授業コード ${state.liveStudent.code} に参加中</h3>
+        <div class="live-row"><button id="leaveLessonBtn" class="secondary-btn" type="button">授業から退出</button></div>
+      </div>`;
+      document.getElementById("leaveLessonBtn").addEventListener("click",()=>{leaveLiveLesson();renderHome();});
+    }else{
+      panel.innerHTML=`<div class="live-card card">
+        <p class="eyebrow">LIVE CLASSROOM</p>
+        <h3>📱 先生と一緒に進める授業に参加</h3>
+        <p>電子黒板に表示された6桁の授業コードを入力してください。</p>
+        <div class="live-row">
+          <input id="lessonCodeInput" class="live-input" inputmode="numeric" maxlength="6" placeholder="123456" aria-label="6桁の授業コード">
+          <button id="joinLessonBtn" class="primary-btn" type="button">授業に参加</button>
+          <span id="liveStudentMsg" class="live-message"></span>
+        </div>
+      </div>`;
+      const input=document.getElementById("lessonCodeInput");
+      input.addEventListener("input",()=>{input.value=input.value.replace(/\D/g,"").slice(0,6);});
+      const join=async()=>{
+        const msg=document.getElementById("liveStudentMsg"),btn=document.getElementById("joinLessonBtn");
+        btn.disabled=true;msg.textContent="接続しています…";
+        try{
+          await joinLiveLesson(input.value);renderHome();
+        }catch(err){
+          msg.innerHTML=`<span class="live-error">${err.message}</span>`;btn.disabled=false;
+        }
+      };
+      document.getElementById("joinLessonBtn").addEventListener("click",join);
+      input.addEventListener("keydown",e=>{if(e.key==="Enter")join();});
+    }
+  }
+}
+
+function beginTeacherTallyPolling(){
+  stopTeacherTallyPolling();
+  const poll=async()=>{
+    if(!state.liveTeacher || !state.currentScenario || state.pendingChoice) return;
+    try{
+      const data=await gasJsonp({
+        action:"tally",
+        code:state.liveTeacher.code,
+        sessionId:state.liveTeacher.sessionId,
+        scenarioId:state.currentScenario.id,
+        stepIndex:String(state.stepIndex)
+      },5500);
+      if(data && data.ok && Array.isArray(data.counts)){
+        state.votes=[Number(data.counts[0]||0),Number(data.counts[1]||0),Number(data.counts[2]||0)];
+        updateVoteUI();
+      }
+    }catch(_){}
+    if(state.liveTeacher && state.currentScenario && !state.pendingChoice){
+      state.tallyPollTimer=setTimeout(poll,1400);
+    }
+  };
+  poll();
+}
+function stopTeacherTallyPolling(){
+  if(state.tallyPollTimer){clearTimeout(state.tallyPollTimer);state.tallyPollTimer=null;}
+}
+
+function beginStudentSessionPolling(fromHome){
+  if(!state.liveStudent) return;
+  if(state.livePollTimer){clearTimeout(state.livePollTimer);state.livePollTimer=null;}
+  const poll=async()=>{
+    if(!state.liveStudent) return;
+    try{
+      const data=await gasJsonp({action:"session",code:state.liveStudent.code},5500);
+      if(!data || !data.ok || !data.session || !data.session.active){
+        leaveLiveLesson();
+        if(document.getElementById("app")){
+          app.innerHTML=`<div class="card live-wait-card"><div class="big-icon">🏁</div><h2>授業が終了しました</h2><p>先生がLIVE授業を終了しました。</p><button id="returnHomeAfterLive" class="primary-btn" type="button">ホームへ</button></div>`;
+          document.getElementById("returnHomeAfterLive").addEventListener("click",renderHome);
+        }
+        return;
+      }
+      const s=data.session;
+      if(s.sessionId!==state.liveStudent.sessionId){
+        leaveLiveLesson();renderHome();return;
+      }
+      const old=state.lastLiveSessionState;
+      state.lastLiveSessionState=s;
+
+      if(s.scenarioId){
+        const sc=scenarios.find(x=>x.id===s.scenarioId);
+        if(sc){
+          const changed=!state.currentScenario || state.currentScenario.id!==sc.id || state.stepIndex!==Number(s.stepIndex);
+          if(changed){
+            state.currentScenario=sc;
+            state.stepIndex=Number(s.stepIndex)||0;
+            state.studentHasVotedKey=null;
+            renderStudentScenario();
+            return;
+          }
+          if(state.currentScenario && state.currentScenario.id===sc.id){
+            if(!old || old.phase!==s.phase || old.chosenChoice!==s.chosenChoice){
+              renderStudentStep();
+            }
+          }
+        }
+      }
+    }catch(_){}
+    if(state.liveStudent) state.livePollTimer=setTimeout(poll,3000 + Math.floor(Math.random()*700));
+  };
+  poll();
+}
+
+function showLiveStudentReveal(index,finished=false){
+  const step=state.currentScenario.steps[state.stepIndex],choice=step.choices[index];
+  const panel=document.getElementById("decisionPanel");
+  panel.innerHTML=`<p class="eyebrow">${finished?"シナリオ終了":"クラスで結果を確認"}</p><div class="outcome-box"><h4>クラスでは ${letter(index)} を選びました</h4><p>${choice.result}</p>
+    <div class="live-vote-lock"><p>${finished?"このシナリオは終了です。電子黒板を見ながらクラスで振り返りましょう。":"次の場面は先生が送ります。電子黒板を見ながら話し合いましょう。"}</p></div></div>`;
 }
 
 /* mock screen renderer */
