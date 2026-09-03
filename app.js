@@ -191,7 +191,13 @@ const metricDefs = [
 ];
 
 const state = {
-  mode: localStorage.getItem("ims_mode_v3") || localStorage.getItem("ims_mode_v2") || "student",
+  mode: (() => {
+    const path = location.pathname.replace(/\\/g,"/");
+    const qMode = new URLSearchParams(location.search).get("mode");
+    if (path.includes("/teacher/") || qMode==="teacher") return "teacher";
+    if (path.includes("/student/") || qMode==="student") return "student";
+    return localStorage.getItem("ims_mode_v3") || localStorage.getItem("ims_mode_v2") || "student";
+  })(),
   currentScenario:null, stepIndex:0, choices:[],
   scores:{privacy:0,care:0,verify:0,balance:0},
   completed:JSON.parse(localStorage.getItem("ims_completed_v3") || localStorage.getItem("ims_completed_v2") || "{}"),

@@ -219,3 +219,34 @@ Firestore / Cloudflare Durable Objects 等のリアルタイム基盤へ移行�
 5. 生成AI・情報確認
 6. オンラインゲーム・課金
 7. なりすまし・偽アカウント
+
+---
+
+# URLを教師用・児童用で分ける
+
+GitHub Pagesへアップロードすると、URLを分けて使えます。
+
+例として公開URLが
+
+`https://ユーザー名.github.io/info-moral-simulator/`
+
+なら、
+
+## 児童用
+`https://ユーザー名.github.io/info-moral-simulator/`
+
+または
+
+`https://ユーザー名.github.io/info-moral-simulator/student/`
+
+## 教師用
+`https://ユーザー名.github.io/info-moral-simulator/teacher/`
+
+`/teacher/` を開くと最初から教師モードになります。
+`/student/` を開くと最初から児童モードになります。
+
+### 注意
+`/teacher/` は「教師だけが使いやすいURL」に分けるためのものです。
+URLを知っている人を技術的に認証する仕組みではありません。
+
+児童に教師画面を絶対に触らせたくない場合は、別途Googleログイン等による教師認証を追加できます。
