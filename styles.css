@@ -119,3 +119,13 @@ body.teacher-mode .app-shell{max-width:1500px}.teacher-shell{min-height:calc(100
   .live-input{width:100%}
   .live-code{font-size:25px}
 }
+
+/* ===== v3.1 role chooser (root landing page) ===== */
+.entry-picker{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.entry-card{display:flex;gap:16px;align-items:center;padding:26px;text-decoration:none;color:inherit;transition:.18s ease}
+.entry-card:hover{transform:translateY(-4px);box-shadow:0 18px 42px rgba(18,44,72,.15)}
+.entry-card .mode-icon{font-size:34px;flex:none}
+.entry-card-body{display:block}
+.entry-card-body strong{display:block;font-size:19px;margin-bottom:6px}
+.entry-card-body small{display:block;color:var(--muted);line-height:1.6}
+@media(max-width:720px){.entry-picker{grid-template-columns:1fr}}

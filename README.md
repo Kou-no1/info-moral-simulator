@@ -1,7 +1,11 @@
-# 情報モラル・シミュレーター v3
+# 情報モラル・シミュレーター v3.1
 ## GitHub Pages + GAS リアルタイム匿名集計版
 
 v2の「児童モード」「授業モード」に加えて、**LIVE授業**を追加しました。
+
+v3.1では、ルートURL・`/teacher/`・`/student/` を役割ごとに完全に分離しました。
+教師用ページには管理機能だけ、児童用ページには授業コード入力だけを表示します
+（詳しくは「URLを教師用・児童用で分ける」の章を参照）。
 
 ## LIVE授業でできること
 
@@ -97,12 +101,17 @@ window.IMS_CONFIG = {
 
 ## 6. GitHub Pagesへアップロード
 
-必要なファイル：
+必要なファイル（フォルダ構成もそのまま維持してください）：
 
-- `index.html`
+- `index.html`（先生用／児童用を選ぶ案内ページ）
 - `styles.css`
 - `app.js`
 - `config.js`
+- `teacher/index.html`（先生用・LIVE管理画面）
+- `student/index.html`（児童用・授業コード入力画面）
+
+`styles.css` `app.js` `config.js` はルート直下に1つだけ置き、
+`teacher/index.html` `student/index.html` からは `../` を付けて参照します。
 
 `Code.gs` はGitHub Pagesには不要です。
 GAS側に貼り付けるバックエンドコードです。
@@ -222,9 +231,10 @@ Firestore / Cloudflare Durable Objects 等のリアルタイム基盤へ移行�
 
 ---
 
-# URLを教師用・児童用で分ける
+# URLを教師用・児童用で分ける（v3.1〜）
 
-GitHub Pagesへアップロードすると、URLを分けて使えます。
+v3.1から、ルートURL・`/teacher/`・`/student/` はそれぞれ役割が固定された別画面になりました。
+「モード切替」ボタンや、もう一方のモードへの導線はページ内に存在しません。
 
 例として公開URLが
 
@@ -232,18 +242,23 @@ GitHub Pagesへアップロードすると、URLを分けて使えます。
 
 なら、
 
-## 児童用
+## ルート（案内ページ）
 `https://ユーザー名.github.io/info-moral-simulator/`
 
-または
+先生用・児童用のどちらを開くか選ぶだけの、シンプルな案内ページです。
+アプリ本体（app.js）は読み込まれません。
 
-`https://ユーザー名.github.io/info-moral-simulator/student/`
-
-## 教師用
+## 教師用（LIVE管理画面）
 `https://ユーザー名.github.io/info-moral-simulator/teacher/`
 
-`/teacher/` を開くと最初から教師モードになります。
-`/student/` を開くと最初から児童モードになります。
+LIVE授業の開始・シナリオ選択・電子黒板での挙手集計だけに絞った画面です。
+
+## 児童用（授業コード入力のみ）
+`https://ユーザー名.github.io/info-moral-simulator/student/`
+
+6桁の授業コードを入力して参加するだけのシンプルな画面です。
+個別にシナリオを選んで一人で体験する機能（旧・児童モードの個別体験）は、
+このバージョンでは削除されています。
 
 ### 注意
 `/teacher/` は「教師だけが使いやすいURL」に分けるためのものです。

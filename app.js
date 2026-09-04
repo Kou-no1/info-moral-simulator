@@ -190,8 +190,15 @@ const metricDefs = [
   ["balance","使い方を決める","時間・お金・勢いに流されず、自分で区切る"]
 ];
 
+// v3.1: ページの<body data-role="teacher|student">を最優先でモードを固定する。
+// 教師用・児童用ページはこれにより「モード切替」自体が存在しない専用画面になる。
+const fixedRole = (document.body && document.body.dataset && document.body.dataset.role) || null;
+
 const state = {
+  fixedRole,
   mode: (() => {
+    if (fixedRole === "teacher") return "teacher";
+    if (fixedRole === "student") return "student";
     const path = location.pathname.replace(/\\/g,"/");
     const qMode = new URLSearchParams(location.search).get("mode");
     if (path.includes("/teacher/") || qMode==="teacher") return "teacher";
@@ -339,17 +346,20 @@ const modeBadge = document.getElementById("modeBadge");
 const modeDialog = document.getElementById("modeDialog");
 const closeModeDialog = document.getElementById("closeModeDialog");
 
-homeBtn.addEventListener("click",renderHome);
-modeBtn.addEventListener("click",()=>{modeDialog.hidden=false;});
-closeModeDialog.addEventListener("click",()=>{modeDialog.hidden=true;});
-modeDialog.addEventListener("click",e=>{if(e.target===modeDialog)modeDialog.hidden=true;});
-document.querySelectorAll(".mode-select-btn").forEach(b=>b.addEventListener("click",()=>{setMode(b.dataset.mode);modeDialog.hidden=true;renderHome();}));
+// 教師用/児童用の専用ページには、モード切替ボタンやダイアログ自体が存在しない。
+// 存在する場合だけイベントを結びつけることで、両方のページ構成に対応する。
+if(homeBtn) homeBtn.addEventListener("click",renderHome);
+if(modeBtn) modeBtn.addEventListener("click",()=>{if(modeDialog)modeDialog.hidden=false;});
+if(closeModeDialog) closeModeDialog.addEventListener("click",()=>{if(modeDialog)modeDialog.hidden=true;});
+if(modeDialog) modeDialog.addEventListener("click",e=>{if(e.target===modeDialog)modeDialog.hidden=true;});
+document.querySelectorAll(".mode-select-btn").forEach(b=>b.addEventListener("click",()=>{setMode(b.dataset.mode);if(modeDialog)modeDialog.hidden=true;renderHome();}));
 
 function setMode(mode){
+  if(state.fixedRole) mode=state.fixedRole; // 専用ページでは常に固定ロールを優先
   state.mode=mode;
   localStorage.setItem("ims_mode_v3",mode);
   document.body.classList.toggle("teacher-mode",mode==="teacher");
-  modeBadge.textContent=mode==="teacher"?"授業モード":"児童モード";
+  if(modeBadge) modeBadge.textContent=mode==="teacher"?"授業モード":"児童モード";
 }
 function clamp(n){return Math.max(0,Math.min(100,n));}
 function letter(i){return String.fromCharCode(65+i);}
@@ -371,21 +381,27 @@ function renderHome(){
 
   renderLiveHomePanel();
 
-  document.getElementById("scenarioHeading").textContent=state.mode==="teacher"
-    ?"電子黒板で進めるシナリオを選ぼう"
-    :(state.liveStudent?"先生がシナリオを開始するまで待とう":"体験するシナリオを選ぼう");
+  // 以下の要素は「教師用ページ」または旧来の汎用ページにのみ存在する。
+  // 「児童用ページ」はコード入力だけのシンプルな画面のため、これらの要素自体が無い。
+  const heading=document.getElementById("scenarioHeading");
+  if(heading){
+    heading.textContent=state.mode==="teacher"
+      ?"電子黒板で進めるシナリオを選ぼう"
+      :(state.liveStudent?"先生がシナリオを開始するまで待とう":"体験するシナリオを選ぼう");
+  }
 
   const grid=document.getElementById("scenarioGrid");
-
   if(state.mode==="student" && state.liveStudent){
-    grid.innerHTML=`<div class="card live-wait-card" style="grid-column:1/-1">
-      <div class="big-icon">📡</div>
-      <h2>授業に参加中</h2>
-      <p>授業コード <strong>${state.liveStudent.code}</strong><br>先生が最初の場面を開始すると、この画面が自動で切り替わります。</p>
-      <p class="live-message">先生の画面を見ながら待ってください。</p>
-    </div>`;
+    if(grid){
+      grid.innerHTML=`<div class="card live-wait-card" style="grid-column:1/-1">
+        <div class="big-icon">📡</div>
+        <h2>授業に参加中</h2>
+        <p>授業コード <strong>${state.liveStudent.code}</strong><br>先生が最初の場面を開始すると、この画面が自動で切り替わります。</p>
+        <p class="live-message">先生の画面を見ながら待ってください。</p>
+      </div>`;
+    }
     beginStudentSessionPolling(true);
-  }else{
+  }else if(grid){
     scenarios.forEach(sc=>{
       const card=document.createElement("article");
       card.className="scenario-card card";card.setAttribute("role","button");card.setAttribute("tabindex","0");
@@ -398,11 +414,17 @@ function renderHome(){
     });
   }
 
-  const doneCount=Object.values(state.completed).filter(Boolean).length;
-  document.getElementById("overallProgress").textContent=state.mode==="teacher"?"全7テーマ・各3場面":`${doneCount} / ${scenarios.length} 体験済み`;
-  document.getElementById("lessonTip").innerHTML=state.mode==="teacher"
-    ?`<h3>🧑‍🏫 授業モード</h3><ol><li><strong>LIVE授業</strong>：授業コードを児童に伝えると、各端末の回答が自動集計されます。</li><li>先生が「クラスではA/B/Cを選ぶ」を押すと結果公開。次の場面へ進むと児童端末も追従します。</li><li>GASが未設定・通信不調でも、従来の<strong>手動挙手集計</strong>で進められます。</li></ol>`
-    :`<h3>👤 児童モード</h3><ol><li>個別学習なら、そのままシナリオを選びます。</li><li>先生と一緒に進めるときは、上の「授業に参加」から6桁コードを入力します。</li><li>LIVE授業中は、回答は匿名の端末IDだけで集計されます。</li></ol>`;
+  const progressEl=document.getElementById("overallProgress");
+  if(progressEl){
+    const doneCount=Object.values(state.completed).filter(Boolean).length;
+    progressEl.textContent=state.mode==="teacher"?"全7テーマ・各3場面":`${doneCount} / ${scenarios.length} 体験済み`;
+  }
+  const tipEl=document.getElementById("lessonTip");
+  if(tipEl){
+    tipEl.innerHTML=state.mode==="teacher"
+      ?`<h3>🧑‍🏫 授業モード</h3><ol><li><strong>LIVE授業</strong>：授業コードを児童に伝えると、各端末の回答が自動集計されます。</li><li>先生が「クラスではA/B/Cを選ぶ」を押すと結果公開。次の場面へ進むと児童端末も追従します。</li><li>GASが未設定・通信不調でも、従来の<strong>手動挙手集計</strong>で進められます。</li></ol>`
+      :`<h3>👤 児童モード</h3><ol><li>個別学習なら、そのままシナリオを選びます。</li><li>先生と一緒に進めるときは、上の「授業に参加」から6桁コードを入力します。</li><li>LIVE授業中は、回答は匿名の端末IDだけで集計されます。</li></ol>`;
+  }
   window.scrollTo({top:0,behavior:"smooth"});
 }
 function startScenario(id){
@@ -638,6 +660,7 @@ function renderLiveHomePanel(){
       panel.innerHTML=`<div class="live-card card">
         <p class="eyebrow">LIVE CLASSROOM</p>
         <h3><span class="live-status-dot on"></span>授業コード ${state.liveStudent.code} に参加中</h3>
+        <p class="live-hint">先生が最初の場面を開始すると、この画面が自動で切り替わります。電子黒板を見ながら待ちましょう。</p>
         <div class="live-row"><button id="leaveLessonBtn" class="secondary-btn" type="button">授業から退出</button></div>
       </div>`;
       document.getElementById("leaveLessonBtn").addEventListener("click",()=>{leaveLiveLesson();renderHome();});

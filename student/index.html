@@ -8,7 +8,7 @@
   <meta name="description" content="小学校高学年向け。SNS・チャット・生成AI・ゲームを疑似体験しながら情報モラルを考える教材です。" />
   <link rel="stylesheet" href="../styles.css" />
 </head>
-<body>
+<body data-role="student">
   <div class="app-shell">
     <header class="topbar">
       <div class="brand">
@@ -17,7 +17,6 @@
       </div>
       <div class="top-actions">
         <span id="modeBadge" class="mode-badge">児童モード</span>
-        <button id="modeBtn" class="ghost-btn" type="button">モード切替</button>
         <button id="homeBtn" class="ghost-btn" type="button">ホーム</button>
       </div>
     </header>
@@ -32,22 +31,12 @@
   <template id="homeTemplate">
     <section class="hero card">
       <div class="hero-copy">
-        <span class="badge">45分授業向け</span>
-        <h2>送る前に、<br>もう一度考えてみよう。</h2>
+        <span class="badge">授業に参加</span>
+        <h2>先生の電子黒板に<br>表示されたコードを入力してね</h2>
         <p>
           SNS、チャット、生成AI、オンラインゲーム。
           「ちょっとだけ」の判断が、その後どうつながるかを安全に疑似体験します。
         </p>
-        <div class="mode-picker" aria-label="利用モード">
-          <button class="mode-card active" data-mode="student" type="button">
-            <span class="mode-icon">👤</span>
-            <span><strong>児童モード</strong><small>1人1台端末で、自分の判断を体験</small></span>
-          </button>
-          <button class="mode-card" data-mode="teacher" type="button">
-            <span class="mode-icon">🧑‍🏫</span>
-            <span><strong>授業モード</strong><small>電子黒板＋挙手集計で、学級全体で体験</small></span>
-          </button>
-        </div>
       </div>
       <div class="hero-visual" aria-hidden="true">
         <div class="phone-mini">
@@ -62,19 +51,6 @@
     </section>
 
     <section id="liveHomePanel" class="live-home-panel"></section>
-
-    <section>
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">SCENARIOS</p>
-          <h2 id="scenarioHeading">体験するシナリオを選ぼう</h2>
-        </div>
-        <div id="overallProgress" class="overall-progress"></div>
-      </div>
-      <div id="scenarioGrid" class="scenario-grid"></div>
-    </section>
-
-    <section id="lessonTip" class="lesson-tip card soft"></section>
   </template>
 
   <template id="studentScenarioTemplate">
@@ -103,91 +79,6 @@
       </section>
     </section>
   </template>
-
-  <template id="teacherScenarioTemplate">
-    <section class="teacher-shell">
-      <div class="teacher-toolbar">
-        <button class="back-link back-home" type="button">← シナリオ選択</button>
-        <div id="teacherLiveStatus" class="teacher-live-status"></div>
-        <div class="teacher-progress">
-          <span id="teacherStepText"></span>
-          <div class="progress-bar"><div id="teacherStepBar"></div></div>
-        </div>
-        <button id="resetVotesBtn" class="ghost-btn" type="button">挙手数を0に戻す</button>
-      </div>
-
-      <section class="teacher-board card">
-        <div class="teacher-context">
-          <div>
-            <p id="teacherScenarioLabel" class="eyebrow"></p>
-            <h2 id="teacherScenarioTitle"></h2>
-          </div>
-          <div class="board-app-chip"><span class="app-dot"></span><span id="teacherAppName"></span></div>
-        </div>
-
-        <div class="teacher-stage-grid">
-          <div id="teacherMockScreen" class="teacher-mock-screen"></div>
-          <div class="teacher-question">
-            <p class="eyebrow">みんなならどうする？</p>
-            <h3 id="teacherPrompt"></h3>
-            <div id="teacherContextBox" class="context-box board-context"></div>
-          </div>
-        </div>
-
-        <div id="teacherChoices" class="teacher-choices"></div>
-        <div id="teacherOutcome" class="teacher-outcome" hidden></div>
-      </section>
-    </section>
-  </template>
-
-  <template id="resultTemplate">
-    <section class="result-wrap">
-      <div class="result-hero card">
-        <div>
-          <p id="resultModeLabel" class="eyebrow">振り返り</p>
-          <h2 id="resultTitle"></h2>
-          <p id="resultSummary"></p>
-        </div>
-      </div>
-
-      <section class="metric-grid" id="metricGrid"></section>
-
-      <section class="card timeline-card">
-        <div class="section-heading compact">
-          <div>
-            <p id="timelineLabel" class="eyebrow">あなたの選択</p>
-            <h3>どこで立ち止まれたかな？</h3>
-          </div>
-        </div>
-        <div id="choiceTimeline" class="choice-timeline"></div>
-      </section>
-
-      <section class="card reflection-card">
-        <p class="eyebrow">考えてみよう</p>
-        <h3>振り返りの3問</h3>
-        <div id="reflectionQuestions" class="reflection-questions"></div>
-      </section>
-
-      <section class="result-actions">
-        <button id="retryBtn" class="secondary-btn" type="button">同じシナリオをもう一度</button>
-        <button id="nextScenarioBtn" class="primary-btn" type="button">別のシナリオへ</button>
-      </section>
-    </section>
-  </template>
-
-  <div id="modeDialog" class="modal" hidden>
-    <div class="modal-card card" role="dialog" aria-modal="true" aria-labelledby="modeDialogTitle">
-      <p class="eyebrow">MODE</p>
-      <h2 id="modeDialogTitle">使い方を選ぶ</h2>
-      <button class="mode-select-btn" data-mode="student" type="button">
-        <span>👤</span><strong>児童モード</strong><small>一人一端末で個別に体験</small>
-      </button>
-      <button class="mode-select-btn" data-mode="teacher" type="button">
-        <span>🧑‍🏫</span><strong>授業モード</strong><small>電子黒板で挙手を集計しながら進行</small>
-      </button>
-      <button id="closeModeDialog" class="ghost-btn modal-close" type="button">閉じる</button>
-    </div>
-  </div>
 
   <script src="../config.js"></script>
   <script src="../app.js"></script>
